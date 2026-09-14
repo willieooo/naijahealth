@@ -17,7 +17,7 @@ const ROLE_OPTIONS = [
 ];
 
 export default function EhrApp({ profile, signOut, refreshProfile }) {
-  const [tab, setTab] = useState("patients");
+  const [tab, setTab] = useState("register");
   const [patients, setPatients] = useState([]);
   const [patientsLoading, setPatientsLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -90,7 +90,7 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
     setPatientsLoading(true);
     const { data, error } = await supabase
       .from("patients")
-      .select("*, allergies(id)")
+      .select("*, allergies(id), registering_facility:registering_facility_id(name)")
       .order("created_at", { ascending: false });
     if (error) {
       showToast(`Failed to load patients: ${error.message}`);
@@ -897,6 +897,9 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
       <div style={{ width: 220, background: T.primaryDark, color: "#EAF3F0", padding: "20px 14px", display: "flex", flexDirection: "column" }}>
         <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 2 }}>NaijaHealth Record</div>
         <div style={{ fontSize: 13.5, color: "#9FC3B8", marginBottom: 14 }}>Live backend · {stateName}</div>
+        <div style={{ fontSize: 13, color: "#9FC3B8", marginBottom: 14 }}>
+          Your facility: <strong style={{ color: "#EAF3F0" }}>{profile.facilities?.name || "Not set"}</strong>
+        </div>
 
         <div style={{ fontSize: 15, color: "#9FC3B8", lineHeight: 1.5, marginBottom: 20, paddingBottom: 16, borderBottom: "1px solid rgba(255,255,255,0.12)" }}>
           {board}<br />Insurance: {scheme}
@@ -977,6 +980,10 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
                       <div style={{ fontSize: 14, color: T.inkSoft, marginTop: 2 }}>
                         {p.nin ? `NIN ${p.nin}` : "No NIN on file"}
                       </div>
+                      <div style={{ fontSize: 13, color: p.registering_facility_id === profile.facility_id ? T.inkSoft : T.amber, marginTop: 2 }}>
+                        {p.registering_facility?.name || "Unknown facility"}
+                        {p.registering_facility_id !== profile.facility_id && " (different facility)"}
+                      </div>
                     </button>
                   ))}
                   {filtered.length === 0 && (
@@ -998,6 +1005,10 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
                       <div style={{ fontSize: 21, fontWeight: 800 }}>{selected.full_name}</div>
                       <div style={{ fontSize: 14.5, color: T.inkSoft, marginTop: 3 }}>
                         UHID {selected.id.slice(0, 8)} · DOB {selected.date_of_birth} · {selected.sex}
+                      </div>
+                      <div style={{ fontSize: 13.5, color: T.inkSoft, marginTop: 3 }}>
+                        Registered at: <strong style={{ color: T.ink }}>{selected.registering_facility?.name || "Unknown"}</strong>
+                        {isEmergencyView && <span style={{ color: T.danger, fontWeight: 600 }}> · not your facility</span>}
                       </div>
                     </div>
                     {selected.nin ? <Badge tone="primary">NIN on file</Badge> : <Badge tone="amber">No NIN — UHID only</Badge>}
