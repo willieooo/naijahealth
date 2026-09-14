@@ -46,6 +46,8 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
   const [emergencyPatientIds, setEmergencyPatientIds] = useState({});
   const [documents, setDocuments] = useState([]);
   const [docDraft, setDocDraft] = useState({ title: "", documentType: "lab_result", file: null });
+  const [emailingReport, setEmailingReport] = useState(false);
+  const [lastEmailStatus, setLastEmailStatus] = useState(null);
   const [uploadingDoc, setUploadingDoc] = useState(false);
   const [referrals, setReferrals] = useState([]);
   const [investigations, setInvestigations] = useState([]);
@@ -84,7 +86,7 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
   const [tamperRunning, setTamperRunning] = useState(false);
 
   const [form, setForm] = useState({
-    firstName: "", middleName: "", surname: "", nin: "", dob: "", sex: "Female", phone: "",
+    firstName: "", middleName: "", surname: "", nin: "", dob: "", sex: "Female", phone: "", email: "",
     street: "", lga: "", facilityId: "",
   });
 
@@ -444,6 +446,57 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
     loadAudit();
   }
 
+  async function handleEmailReport() {
+    if (!selected?.email) {
+      showToast("No email on file for this patient.");
+      return;
+    }
+    setEmailingReport(true);
+    setLastEmailStatus(null);
+
+    const activeProblems = problems.filter((p) => p.status === "active");
+    const lines = [
+      `Health record summary for ${selected.full_name}`,
+      `UHID: ${selected.id.slice(0, 8)}`,
+      "",
+      "Active problems:",
+      activeProblems.length ? activeProblems.map((p) => `- ${p.description} (${p.significance})`).join("\n") : "None recorded.",
+      "",
+      "Allergies:",
+      allergies.length ? allergies.map((a) => `- ${a.substance}${a.reaction ? ` (${a.reaction})` : ""}`).join("\n") : "None recorded.",
+      "",
+      "Current medications:",
+      medications.length ? medications.map((m) => `- ${m.drug_name}${m.dosage ? ` — ${m.dosage}` : ""} (${m.rx_type})`).join("\n") : "None recorded.",
+      "",
+      `Generated from your record at ${board || "your facility"}. Contact your facility with any questions.`,
+    ];
+    const body = lines.join("\n");
+
+    const { data: notif, error: notifErr } = await supabase.from("email_notifications").insert({
+      patient_id: selectedId,
+      recipient_email: selected.email,
+      subject: `Health record summary — ${selected.full_name}`,
+      body,
+    }).select().single();
+
+    if (notifErr) {
+      setEmailingReport(false);
+      showToast(`Failed to queue email: ${notifErr.message}`);
+      return;
+    }
+
+    const { data: result } = await supabase.functions.invoke("send-email", { body: { notificationId: notif.id } });
+    setEmailingReport(false);
+    setLastEmailStatus(result?.ok ? "sent" : "failed");
+
+    await supabase.from("audit_log").insert({
+      actor_id: profile.id, patient_id: selectedId, action: "Emailed report", resource: "email_notifications",
+      justification: result?.ok ? "Sent" : (result?.error || "Failed"),
+    });
+    loadAudit();
+    showToast(result?.ok ? "Report emailed." : `Email failed: ${result?.error || "unknown error"}`);
+  }
+
   async function handleAddWarning(e) {
     e.preventDefault();
     if (!warningDraft.trim()) return;
@@ -495,6 +548,7 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
 
   async function handleSelectPatient(p) {
     setPatientSubTab("summary");
+    setLastEmailStatus(null);
     const { data: hasRelationship, error } = await supabase.rpc("has_patient_relationship", { p_patient_id: p.id });
     if (error) {
       // Fail safe toward requiring justification rather than silently granting access.
@@ -667,10 +721,21 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
     setIsolationRunning(true);
     setIsolationResult(null);
     try {
-      // Find a state that is NOT the current user's state
+      // Find a state that is NOT the current user's state. Prefer states we
+      // know have real registered patients — comparing against an empty
+      // state proves nothing (0 rows either way), since there'd be nothing
+      // there to leak regardless of whether RLS is working.
       const { data: states, error: stateErr } = await supabase.from("state_instances").select("id, state_name");
       if (stateErr) throw stateErr;
-      const otherState = (states || []).find((s) => s.id !== profile.state_instance_id);
+      const preferredNames = ["Ogun", "Lagos", "Kaduna"];
+      let otherState = null;
+      for (const name of preferredNames) {
+        const candidate = (states || []).find((s) => s.state_name === name && s.id !== profile.state_instance_id);
+        if (candidate) { otherState = candidate; break; }
+      }
+      if (!otherState) {
+        otherState = (states || []).find((s) => s.id !== profile.state_instance_id);
+      }
       if (!otherState) {
         setIsolationResult({ ok: false, message: "No other state configured to test against." });
         setIsolationRunning(false);
@@ -852,6 +917,7 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
         date_of_birth: form.dob,
         sex: form.sex,
         phone: form.phone.trim() || null,
+        email: form.email.trim() || null,
         address_street: form.street.trim() || null,
         address_lga: form.lga.trim() || null,
         address_state: stateName,
@@ -870,7 +936,7 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
       resource: "patients",
       justification: data.nin ? "Identity: NIN" : "Identity: UHID (no NIN on file)",
     });
-    setForm({ firstName: "", middleName: "", surname: "", nin: "", dob: "", sex: "Female", phone: "", street: "", lga: "", facilityId: form.facilityId });
+    setForm({ firstName: "", middleName: "", surname: "", nin: "", dob: "", sex: "Female", phone: "", email: "", street: "", lga: "", facilityId: form.facilityId });
     setSelectedId(data.id);
     setTab("patients");
     showToast(`Registered ${data.full_name}`);
@@ -1191,6 +1257,27 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
                           <div style={{ fontSize: 13.5, color: T.inkSoft, fontWeight: 600 }}>PHONE</div>
                           <div style={{ fontSize: 15.5, marginTop: 3 }}>{selected.phone || "—"}</div>
                         </div>
+                        <div>
+                          <div style={{ fontSize: 13.5, color: T.inkSoft, fontWeight: 600 }}>EMAIL</div>
+                          <div style={{ fontSize: 15.5, marginTop: 3 }}>{selected.email || "—"}</div>
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 16 }}>
+                        <button
+                          onClick={handleEmailReport}
+                          disabled={!selected.email || emailingReport}
+                          title={!selected.email ? "No email on file for this patient" : ""}
+                          style={{
+                            background: selected.email ? T.primary : T.border, color: selected.email ? "#fff" : T.inkSoft,
+                            border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 15, fontWeight: 600,
+                            cursor: selected.email && !emailingReport ? "pointer" : "not-allowed",
+                          }}
+                        >
+                          {emailingReport ? "Sending…" : "Email report to patient"}
+                        </button>
+                        {lastEmailStatus === "sent" && <span style={{ marginLeft: 10, fontSize: 14, color: T.primary }}>✓ Sent</span>}
+                        {lastEmailStatus === "failed" && <span style={{ marginLeft: 10, fontSize: 14, color: T.danger }}>Failed — check Email Provider setup</span>}
                       </div>
                     </>
                   )}
@@ -1601,6 +1688,9 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
                   </Field>
                 </div>
               </div>
+              <Field label="Email (optional)">
+                <input type="email" style={inputStyle} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="patient@example.com" />
+              </Field>
               <Field label="Street address">
                 <input style={inputStyle} value={form.street} onChange={(e) => setForm({ ...form, street: e.target.value })} />
               </Field>
