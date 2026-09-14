@@ -16,6 +16,15 @@ const ROLE_OPTIONS = [
   { value: "admin", label: "Admin" },
 ];
 
+const BREAK_GLASS_REASONS = [
+  "Emergency or urgent care",
+  "Patient referred to me",
+  "Patient presented for treatment at my facility today",
+  "Continuity of care — patient transferring from another facility",
+  "Administrative or compliance review",
+  "Other",
+];
+
 export default function EhrApp({ profile, signOut, refreshProfile }) {
   const [tab, setTab] = useState("register");
   const [patients, setPatients] = useState([]);
@@ -30,7 +39,8 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
   const [staffAccounts, setStaffAccounts] = useState([]);
   const [staffUpdating, setStaffUpdating] = useState({});
   const [breakGlassPrompt, setBreakGlassPrompt] = useState(null); // { patientId, patientName } or null
-  const [breakGlassReason, setBreakGlassReason] = useState("");
+  const [breakGlassCategory, setBreakGlassCategory] = useState("");
+  const [breakGlassDetail, setBreakGlassDetail] = useState("");
   const [breakGlassSubmitting, setBreakGlassSubmitting] = useState(false);
   const [emergencyPatientIds, setEmergencyPatientIds] = useState({});
   const [documents, setDocuments] = useState([]);
@@ -496,10 +506,20 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
 
   async function handleSubmitBreakGlass(e) {
     e.preventDefault();
-    if (!breakGlassReason.trim()) {
-      showToast("A reason is required to access this record.");
+    if (!breakGlassCategory) {
+      showToast("Select a reason category.");
       return;
     }
+    if (breakGlassCategory === "Other" && breakGlassDetail.trim().length < 15) {
+      showToast("Please describe the reason in a bit more detail (at least 15 characters).");
+      return;
+    }
+    const fullReason = breakGlassCategory === "Other"
+      ? `Other: ${breakGlassDetail.trim()}`
+      : breakGlassDetail.trim()
+        ? `${breakGlassCategory} — ${breakGlassDetail.trim()}`
+        : breakGlassCategory;
+
     setBreakGlassSubmitting(true);
     const target = patients.find((p) => p.id === breakGlassPrompt.patientId);
 
@@ -508,13 +528,13 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
       patient_id: breakGlassPrompt.patientId,
       action: "Break-glass access",
       resource: "patients",
-      justification: breakGlassReason.trim(),
+      justification: fullReason,
       is_break_glass: true,
       patient_notified: !!target?.phone,
     });
 
     if (target?.phone) {
-      const message = `NaijaHealth: Your health record was accessed by a facility outside your usual care team. Reason given: ${breakGlassReason.trim()}. Contact your state health authority with any concerns.`;
+      const message = `NaijaHealth: Your health record was accessed by a facility outside your usual care team. Reason given: ${fullReason}. Contact your state health authority with any concerns.`;
       const { data: notif } = await supabase.from("sms_notifications").insert({
         patient_id: breakGlassPrompt.patientId,
         phone_number: target.phone,
@@ -529,7 +549,8 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
     setBreakGlassSubmitting(false);
     setSelectedId(breakGlassPrompt.patientId);
     setBreakGlassPrompt(null);
-    setBreakGlassReason("");
+    setBreakGlassCategory("");
+    setBreakGlassDetail("");
     loadAudit();
   }
 
@@ -866,17 +887,35 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
               a reason is required, and this access will be logged and flagged for review.
             </div>
             <form onSubmit={handleSubmitBreakGlass}>
-              <textarea
+              <select
                 autoFocus
-                style={{ ...inputStyle, minHeight: 70, fontFamily: "inherit", marginBottom: 12 }}
-                placeholder="Reason, e.g. Emergency presentation, Patient referred to me…"
-                value={breakGlassReason}
-                onChange={(e) => setBreakGlassReason(e.target.value)}
-              />
+                style={{ ...inputStyle, marginBottom: 10 }}
+                value={breakGlassCategory}
+                onChange={(e) => setBreakGlassCategory(e.target.value)}
+              >
+                <option value="">Select a reason…</option>
+                {BREAK_GLASS_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+              {breakGlassCategory === "Other" && (
+                <textarea
+                  style={{ ...inputStyle, minHeight: 70, fontFamily: "inherit", marginBottom: 12 }}
+                  placeholder="Describe the reason (required — at least 15 characters)"
+                  value={breakGlassDetail}
+                  onChange={(e) => setBreakGlassDetail(e.target.value)}
+                />
+              )}
+              {breakGlassCategory && breakGlassCategory !== "Other" && (
+                <textarea
+                  style={{ ...inputStyle, minHeight: 50, fontFamily: "inherit", marginBottom: 12 }}
+                  placeholder="Additional detail (optional)"
+                  value={breakGlassDetail}
+                  onChange={(e) => setBreakGlassDetail(e.target.value)}
+                />
+              )}
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <button
                   type="button"
-                  onClick={() => { setBreakGlassPrompt(null); setBreakGlassReason(""); }}
+                  onClick={() => { setBreakGlassPrompt(null); setBreakGlassCategory(""); setBreakGlassDetail(""); }}
                   style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "9px 16px", fontSize: 15, color: T.inkSoft, cursor: "pointer" }}
                 >
                   Cancel
