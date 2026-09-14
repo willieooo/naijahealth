@@ -37,6 +37,7 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
   const [careGaps, setCareGaps] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [staffAccounts, setStaffAccounts] = useState([]);
+  const [breakGlassActivity, setBreakGlassActivity] = useState([]);
   const [staffUpdating, setStaffUpdating] = useState({});
   const [breakGlassPrompt, setBreakGlassPrompt] = useState(null); // { patientId, patientName } or null
   const [breakGlassCategory, setBreakGlassCategory] = useState("");
@@ -149,13 +150,22 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
     if (!error) setStaffAccounts(data || []);
   }, [profile.state_instance_id]);
 
+  const loadBreakGlassActivity = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("break_glass_activity")
+      .select("*")
+      .order("last_7_days", { ascending: false });
+    if (!error) setBreakGlassActivity(data || []);
+  }, []);
+
   useEffect(() => {
     loadPatients();
     loadFacilities();
     loadAudit();
     loadProgrammes();
     loadStaffAccounts();
-  }, [loadPatients, loadFacilities, loadAudit, loadProgrammes, loadStaffAccounts]);
+    loadBreakGlassActivity();
+  }, [loadPatients, loadFacilities, loadAudit, loadProgrammes, loadStaffAccounts, loadBreakGlassActivity]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -552,6 +562,7 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
     setBreakGlassCategory("");
     setBreakGlassDetail("");
     loadAudit();
+    loadBreakGlassActivity();
   }
 
   async function handleChangeStaffRole(userId, newRole) {
@@ -1632,6 +1643,43 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
               Entries flagged <Badge tone="danger">Break-glass</Badge> are accesses made without an existing
               care relationship to the patient, with the clinician's stated reason.
             </div>
+
+            {profile.role === "admin" && breakGlassActivity.some((s) => s.last_7_days > 0) && (
+              <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 16, marginBottom: 20 }}>
+                <div style={{ fontSize: 15.5, fontWeight: 700, marginBottom: 4 }}>Break-glass activity by staff member</div>
+                <div style={{ fontSize: 13.5, color: T.inkSoft, marginBottom: 12 }}>
+                  No single entry can be technically verified as truthful — this is what actually catches misuse:
+                  an unusual volume from one person, not any one access.
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {breakGlassActivity.filter((s) => s.last_7_days > 0).map((s) => {
+                    const elevated = s.last_7_days >= 6;
+                    const watch = s.last_7_days >= 3 && s.last_7_days < 6;
+                    return (
+                      <div key={s.actor_id} style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        padding: "8px 12px", borderRadius: 8,
+                        background: elevated ? T.dangerSoft : watch ? T.amberSoft : T.bg,
+                        border: `1px solid ${elevated ? T.danger : watch ? T.amber : T.border}`,
+                      }}>
+                        <div>
+                          <span style={{ fontSize: 14.5, fontWeight: 600 }}>{s.actor_name}</span>
+                          <span style={{ fontSize: 13, color: T.inkSoft, marginLeft: 8 }}>{s.actor_email}</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span style={{ fontSize: 13.5, color: T.inkSoft }}>
+                            {s.last_24_hours} in 24h · {s.last_7_days} in 7 days
+                          </span>
+                          {elevated && <Badge tone="danger">Review recommended</Badge>}
+                          {watch && <Badge tone="amber">Watch</Badge>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {audit.map((a) => (
                 <div key={a.id} style={{ background: a.is_break_glass ? T.dangerSoft : T.surface, border: `1px solid ${a.is_break_glass ? T.danger : T.border}`, borderRadius: 8, padding: "10px 12px", display: "flex", justifyContent: "space-between" }}>
