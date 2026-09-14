@@ -26,7 +26,7 @@ const BREAK_GLASS_REASONS = [
 ];
 
 export default function EhrApp({ profile, signOut, refreshProfile }) {
-  const [tab, setTab] = useState("register");
+  const [tab, setTab] = useState("overview");
   const [patients, setPatients] = useState([]);
   const [patientsLoading, setPatientsLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -37,6 +37,7 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
   const [careGaps, setCareGaps] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [staffAccounts, setStaffAccounts] = useState([]);
+  const [overviewStats, setOverviewStats] = useState({ careGapsCount: null, pendingReferralsCount: null });
   const [breakGlassActivity, setBreakGlassActivity] = useState([]);
   const [staffUpdating, setStaffUpdating] = useState({});
   const [breakGlassPrompt, setBreakGlassPrompt] = useState(null); // { patientId, patientName } or null
@@ -47,6 +48,9 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
   const [documents, setDocuments] = useState([]);
   const [docDraft, setDocDraft] = useState({ title: "", documentType: "lab_result", file: null });
   const [emailingReport, setEmailingReport] = useState(false);
+  const [editingPatient, setEditingPatient] = useState(false);
+  const [editDraft, setEditDraft] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
   const [lastEmailStatus, setLastEmailStatus] = useState(null);
   const [uploadingDoc, setUploadingDoc] = useState(false);
   const [referrals, setReferrals] = useState([]);
@@ -160,6 +164,17 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
     if (!error) setBreakGlassActivity(data || []);
   }, []);
 
+  const loadOverviewStats = useCallback(async () => {
+    const [careGapsRes, referralsRes] = await Promise.all([
+      supabase.from("care_gaps").select("patient_id", { count: "exact", head: true }),
+      supabase.from("referrals").select("id", { count: "exact", head: true }).eq("status", "pending"),
+    ]);
+    setOverviewStats({
+      careGapsCount: careGapsRes.count ?? 0,
+      pendingReferralsCount: referralsRes.count ?? 0,
+    });
+  }, []);
+
   useEffect(() => {
     loadPatients();
     loadFacilities();
@@ -167,7 +182,8 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
     loadProgrammes();
     loadStaffAccounts();
     loadBreakGlassActivity();
-  }, [loadPatients, loadFacilities, loadAudit, loadProgrammes, loadStaffAccounts, loadBreakGlassActivity]);
+    loadOverviewStats();
+  }, [loadPatients, loadFacilities, loadAudit, loadProgrammes, loadStaffAccounts, loadBreakGlassActivity, loadOverviewStats]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -444,6 +460,62 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
       justification: doc.title,
     });
     loadAudit();
+  }
+
+  function openEditPatient() {
+    if (!selected) return;
+    setEditDraft({
+      firstName: selected.first_name || "",
+      middleName: selected.middle_name || "",
+      surname: selected.surname || "",
+      nin: selected.nin || "",
+      dob: selected.date_of_birth || "",
+      sex: selected.sex || "Female",
+      phone: selected.phone || "",
+      email: selected.email || "",
+      street: selected.address_street || "",
+      lga: selected.address_lga || "",
+    });
+    setEditingPatient(true);
+  }
+
+  async function handleSaveEdit(e) {
+    e.preventDefault();
+    if (!editDraft.firstName.trim() || !editDraft.surname.trim() || !editDraft.dob) {
+      showToast("First name, surname, and date of birth are required.");
+      return;
+    }
+    const ninCheck = validateNIN(editDraft.nin.trim());
+    if (!ninCheck.valid) {
+      showToast(ninCheck.message);
+      return;
+    }
+    setSavingEdit(true);
+    const { error } = await supabase.from("patients").update({
+      first_name: editDraft.firstName.trim(),
+      middle_name: editDraft.middleName.trim() || null,
+      surname: editDraft.surname.trim(),
+      nin: editDraft.nin.trim() || null,
+      date_of_birth: editDraft.dob,
+      sex: editDraft.sex,
+      phone: editDraft.phone.trim() || null,
+      email: editDraft.email.trim() || null,
+      address_street: editDraft.street.trim() || null,
+      address_lga: editDraft.lga.trim() || null,
+    }).eq("id", selectedId);
+    setSavingEdit(false);
+    if (error) {
+      showToast(error.message.toLowerCase().includes("duplicate") ? "A patient with this NIN already exists." : `Failed to save: ${error.message}`);
+      return;
+    }
+    await supabase.from("audit_log").insert({
+      actor_id: profile.id, patient_id: selectedId, action: "Updated patient details", resource: "patients",
+    });
+    setEditingPatient(false);
+    setEditDraft(null);
+    loadPatients();
+    loadAudit();
+    showToast("Patient details updated.");
   }
 
   async function handleEmailReport() {
@@ -1010,6 +1082,95 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
         </div>
       )}
 
+      {editingPatient && editDraft && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(10,20,30,0.55)", zIndex: 100,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+        }}>
+          <div style={{ background: T.surface, borderRadius: 14, padding: 26, maxWidth: 480, width: "100%", maxHeight: "90vh", overflowY: "auto" }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: T.primaryDark, marginBottom: 16 }}>
+              Edit patient details
+            </div>
+            <form onSubmit={handleSaveEdit}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <Field label="First name">
+                    <input style={inputStyle} value={editDraft.firstName} onChange={(e) => setEditDraft({ ...editDraft, firstName: e.target.value })} />
+                  </Field>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <Field label="Middle name">
+                    <input style={inputStyle} value={editDraft.middleName} onChange={(e) => setEditDraft({ ...editDraft, middleName: e.target.value })} />
+                  </Field>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <Field label="Surname">
+                    <input style={inputStyle} value={editDraft.surname} onChange={(e) => setEditDraft({ ...editDraft, surname: e.target.value })} />
+                  </Field>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <Field label="NIN (optional)" hint="11 digits">
+                    <input style={inputStyle} value={editDraft.nin} onChange={(e) => setEditDraft({ ...editDraft, nin: e.target.value })} />
+                  </Field>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <Field label="Date of birth">
+                    <input type="date" style={inputStyle} value={editDraft.dob} onChange={(e) => setEditDraft({ ...editDraft, dob: e.target.value })} />
+                  </Field>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <Field label="Sex">
+                    <select style={inputStyle} value={editDraft.sex} onChange={(e) => setEditDraft({ ...editDraft, sex: e.target.value })}>
+                      <option>Female</option>
+                      <option>Male</option>
+                    </select>
+                  </Field>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <Field label="Phone">
+                    <input style={inputStyle} value={editDraft.phone} onChange={(e) => setEditDraft({ ...editDraft, phone: e.target.value })} />
+                  </Field>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <Field label="Email">
+                    <input type="email" style={inputStyle} value={editDraft.email} onChange={(e) => setEditDraft({ ...editDraft, email: e.target.value })} />
+                  </Field>
+                </div>
+              </div>
+              <Field label="Street address">
+                <input style={inputStyle} value={editDraft.street} onChange={(e) => setEditDraft({ ...editDraft, street: e.target.value })} />
+              </Field>
+              <Field label="LGA">
+                <input style={inputStyle} value={editDraft.lga} onChange={(e) => setEditDraft({ ...editDraft, lga: e.target.value })} />
+              </Field>
+              <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 14 }}>
+                State and registering facility can't be changed here — contact an admin if a patient was genuinely registered under the wrong state or facility.
+              </div>
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button
+                  type="button"
+                  onClick={() => { setEditingPatient(false); setEditDraft(null); }}
+                  style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "9px 16px", fontSize: 15, color: T.inkSoft, cursor: "pointer" }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEdit}
+                  style={{ background: T.primary, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer" }}
+                >
+                  {savingEdit ? "Saving…" : "Save changes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       <div style={{ width: 220, background: T.primaryDark, color: "#EAF3F0", padding: "20px 14px", display: "flex", flexDirection: "column" }}>
         <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 2 }}>NaijaHealth Record</div>
         <div style={{ fontSize: 13.5, color: "#9FC3B8", marginBottom: 14 }}>Live backend · {stateName}</div>
@@ -1026,6 +1187,7 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
         </div>
 
         {[
+          { key: "overview", label: "Overview" },
           { key: "patients", label: "Patients" },
           { key: "register", label: "Register new patient" },
           { key: "audit", label: "Audit log" },
@@ -1063,6 +1225,55 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
             padding: "9px 14px", borderRadius: 8, fontSize: 15, fontWeight: 600, boxShadow: "0 4px 14px rgba(0,0,0,0.15)", zIndex: 10,
           }}>{toast}</div>
         )}
+
+        {tab === "overview" && (() => {
+          const hour = new Date().getHours();
+          const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+          const firstName = (profile.full_name || "").split(" ")[0];
+          const myFacilityPatients = profile.facility_id
+            ? patients.filter((p) => p.registering_facility_id === profile.facility_id).length
+            : null;
+          const statCard = (label, value, hint) => (
+            <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 16, flex: 1, minWidth: 160 }}>
+              <div style={{ fontSize: 13, color: T.inkSoft, fontWeight: 600 }}>{label}</div>
+              <div style={{ fontSize: 28, fontWeight: 800, marginTop: 4 }}>{value === null ? "…" : value}</div>
+              {hint && <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 2 }}>{hint}</div>}
+            </div>
+          );
+          return (
+            <div style={{ maxWidth: 900 }}>
+              <div style={{ fontSize: 13.5, color: T.inkSoft }}>{new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</div>
+              <div style={{ fontSize: 24, fontWeight: 800, marginBottom: 2 }}>{greeting}{firstName ? `, ${firstName}` : ""}</div>
+              <div style={{ fontSize: 14.5, color: T.inkSoft, marginBottom: 20 }}>Here's what's going on in {stateName} right now.</div>
+
+              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 24 }}>
+                {statCard("Your facility's patients", myFacilityPatients, profile.facilities?.name || "No facility set")}
+                {statCard("Patients you can access", patients.length, `All of ${stateName}, per state-wide access`)}
+                {statCard("Open care gaps", overviewStats.careGapsCount, "Across all patients you can see")}
+                {statCard("Pending referrals", overviewStats.pendingReferralsCount, `In ${stateName}`)}
+                {statCard("Active reminders", programmes.filter((p) => p.is_active).length, "Shown on the sign-in screen")}
+              </div>
+
+              <div style={{ fontSize: 15.5, fontWeight: 700, marginBottom: 10 }}>Quick actions</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={() => setTab("register")} style={{ background: T.primary, color: "#fff", border: "none", borderRadius: 8, padding: "10px 18px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>
+                  Register new patient
+                </button>
+                <button onClick={() => setTab("patients")} style={{ background: T.surface, color: T.primary, border: `1px solid ${T.primary}`, borderRadius: 8, padding: "10px 18px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>
+                  Search patients
+                </button>
+                <button onClick={() => setTab("audit")} style={{ background: T.surface, color: T.inkSoft, border: `1px solid ${T.border}`, borderRadius: 8, padding: "10px 18px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>
+                  View audit log
+                </button>
+                {profile.role === "admin" && (
+                  <button onClick={() => setTab("programmes")} style={{ background: T.surface, color: T.inkSoft, border: `1px solid ${T.border}`, borderRadius: 8, padding: "10px 18px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>
+                    Manage reminders
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {tab === "patients" && (
           <div style={{ display: "flex", gap: 18 }}>
@@ -1127,7 +1338,14 @@ export default function EhrApp({ profile, signOut, refreshProfile }) {
                         {isEmergencyView && <span style={{ color: T.danger, fontWeight: 600 }}> · not your facility</span>}
                       </div>
                     </div>
-                    {selected.nin ? <Badge tone="primary">NIN on file</Badge> : <Badge tone="amber">No NIN — UHID only</Badge>}
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+                      {selected.nin ? <Badge tone="primary">NIN on file</Badge> : <Badge tone="amber">No NIN — UHID only</Badge>}
+                      {!isEmergencyView && (
+                        <button onClick={openEditPatient} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 10px", fontSize: 13, color: T.primary, cursor: "pointer", fontWeight: 600 }}>
+                          Edit details
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 14, marginBottom: 4, borderBottom: `1px solid ${T.border}` }}>
